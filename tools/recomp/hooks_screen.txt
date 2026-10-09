@@ -1,0 +1,2 @@
+# Screen mode (runtime/src/screen_mode.cpp). @ADDR = instruction hook.
+@0270ACC8 # play start (0270AB10): bl 02618094(mgr, 1 = TV play), r4 the mode

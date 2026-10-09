@@ -1067,9 +1067,10 @@ void tab_switch() {
         ImGui::SameLine();
         if (radio("TV picture", !view)) gfxsw::set_gamepad_view(false);
         ImGui::SameLine();
-        if (radio("GamePad screen", view, !pro)) gfxsw::set_gamepad_view(true);
+        if (radio("GamePad screen", view)) gfxsw::set_gamepad_view(true);
         help("ZL + ZR + Minus switches between them while playing. On the GamePad screen the touch\n"
-             "screen works as the GamePad's (items, map). Only with the GamePad chosen above.");
+             "screen works as the GamePad's (items, map). With the Pro Controller chosen above, the GamePad\n"
+             "picture is drawn only while it is shown (test: what the game puts there in that mode).");
     }
     {
         // the upstream 60 fps modes, for testing on the console (the screen is 60 Hz: 60 fps only)

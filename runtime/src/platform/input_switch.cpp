@@ -1,7 +1,9 @@
-// Switch input: Joy-Cons / Pro Controller read as a Wii U Pro Controller (WPAD/KPAD, see
-// hle/padscore.cpp) so the game puts everything on the one TV screen; the Switch tab's Debug section
-// (saved as proController) makes them act as the Wii U GamePad instead. Buttons map by position, which matches the
-// Wii U's labels. Text prompts go through the system software keyboard.
+// Switch input: Joy-Cons / Pro Controller act as the Wii U GamePad (VPAD, hle/system_stubs.cpp), and the window
+// shows the GamePad's picture: the game itself in Off-TV Play (Minus), its touch screen otherwise (the console's
+// touch screen is the GamePad's; Plus pauses with the item menu there, buttons and touch). The Switch tab's Debug
+// section (saved as proController) makes them a Wii U Pro Controller instead (WPAD/KPAD, hle/padscore.cpp), with
+// the TV picture. Buttons map by position, which matches the Wii U's labels. Text prompts go through the system
+// software keyboard.
 #include <switch.h>
 
 #include <algorithm>
@@ -32,7 +34,7 @@ namespace input {
 namespace {
 std::mutex g_mu;
 PadState g_pad;
-std::atomic<bool> g_pro{true};
+std::atomic<bool> g_pro{false};  // the GamePad (2026-10-09; was the Pro Controller)
 float g_values[input_map::kPadCount] = {};  // the settings overlay's view of the controller (controller_values)
 std::function<void(bool, std::u16string)> g_pending;
 std::u16string g_initial;
@@ -340,7 +342,11 @@ void update() {
 
 void set_touch(bool, float, float) {}
 bool pro_controller() { return g_pro.load(std::memory_order_relaxed); }
-void set_pro_controller(bool on) { g_pro = on; LOG("[input] Switch controller acts as %s", on ? "Pro Controller" : "GamePad"); }
+void set_pro_controller(bool on) {
+    g_pro = on;
+    gfxsw::set_gamepad_view(!on);  // the GamePad's picture with the GamePad, the TV's with the Pro Controller
+    LOG("[input] Switch controller acts as %s", on ? "Pro Controller" : "GamePad");
+}
 void release_keys() {}
 void controller_values(float* v) {
     std::lock_guard<std::mutex> lk(g_mu);

@@ -477,7 +477,7 @@ struct PresentUbo {  // present_fsh.glsl, std140
 // where the picture went in the window (GamePad touch, gfxsw::gamepad_touch): x, y, w, h; w 0 while the
 // GamePad picture is not the one shown
 std::atomic<int> g_padRect[4] = {0, 0, 0, 0};
-std::atomic<bool> g_gamepadView{false};
+std::atomic<bool> g_gamepadView{true};  // the GamePad picture (the controller acts as the GamePad by default)
 bool draw_picture(const PresentSource& src, bool capture) {
     if (!g_presentOk || !src.surface || !src.width || !src.height) return false;
     commit_descriptors();  // present_source wrote the picture's view into kPresentImageId
@@ -1417,7 +1417,8 @@ void set_picture_grade(const PictureGrade& g) {
     gfxdk::g_gradeSet = g;
     gfxdk::g_gradeChanged = true;
 }
-bool gamepad_picture_drawn() { return !input::pro_controller(); }
+// with the Pro Controller too while the window shows it: the game keeps its GamePad screen (and touch) then
+bool gamepad_picture_drawn() { return !input::pro_controller() || gfxdk::g_gamepadView.load(std::memory_order_relaxed); }
 bool gamepad_view() { return gfxdk::g_gamepadView.load(std::memory_order_relaxed); }
 void set_gamepad_view(bool on) {
     if (gfxdk::g_gamepadView.exchange(on) != on) LOG("[dk] window: %s picture asked for", on ? "GamePad" : "TV");
