@@ -75,3 +75,76 @@ extern "C" void site_0270ACC8(Cpu* c) {
         LOG("[screen] play starts in Off-TV Play");
     }
 }
+
+
+// ---- the Controller option in the pause menu's Options (GamePad mode: the GamePad is the only controller)
+// The options window (constructor 026D7828, 0x148 bytes) lists 6 items in the US game: Target Type, Camera,
+// First-Person Camera, Controller, Gyroscope, UI Display (Furigana is Japan only; the Miiverse items have their
+// own window, mode 1 at +0x118). Its data:
+//   item descriptors, static at 1010307C, 24 bytes an item: value message ids, a message table, flags and a
+//     callback (PTMF); item 3, Controller, the only one with a callback: 026D87D0, the controller change
+//   +0x104..+0x109 the items' values, a byte each in item order: the loader (026D5CE4) fills them (Controller
+//     from the screen mode, Gyroscope and UI Display from the save's getters 0271FC44 / 0271FC8C), the saver
+//     (026D6DD4) writes back by fixed offsets (+0x108 Gyroscope, +0x109 UI Display), and everything else reads
+//     and writes value[item]
+//   +0x120 the item count (6, set by 026D83F0), +0x124 the row panes (5, recycled while scrolling: item % 5),
+//     +0x128 the cursor item, +0x12C the first item shown
+// Without Controller: the items are put in the order Target Type, Camera, First-Person, Gyroscope, UI Display,
+// Controller (descriptors and values alike) and the count is 5, so Controller is past the end: never shown, never
+// reached. The code that uses fixed offsets (the saver, the Controller callback) sees the game's order.
+namespace {
+constexpr uint32_t kOptDescs = 0x1010307C, kOptDescSize = 0x18;
+constexpr uint32_t kOptValues = 0x104;
+bool g_opt_reordered = false;  // the descriptor table is in the GamePad order
+
+void swap_desc_order(bool reordered) {  // items 3, 4, 5: Controller, Gyroscope, UI <-> Gyroscope, UI, Controller
+    if (g_opt_reordered == reordered) return;
+    uint32_t d[3][6];
+    for (int i = 0; i < 3; i++)
+        for (int w = 0; w < 6; w++) d[i][w] = ld32(kOptDescs + (3 + i) * kOptDescSize + w * 4);
+    static const int kTo[3] = {1, 2, 0}, kFrom[3] = {2, 0, 1};  // reordered[k] = game[kTo[k]]; game[k] = reordered[kFrom[k]]
+    for (int i = 0; i < 3; i++)
+        for (int w = 0; w < 6; w++) st32(kOptDescs + (3 + i) * kOptDescSize + w * 4, d[reordered ? kTo[i] : kFrom[i]][w]);
+    g_opt_reordered = reordered;
+    LOG("[screen] options: the Controller item %s", reordered ? "removed (GamePad mode)" : "back");
+}
+void values_to_reordered(uint32_t win) {  // game order (Controller, Gyroscope, UI) -> GamePad order
+    const uint8_t ctl = ld8(win + kOptValues + 3), gyro = ld8(win + kOptValues + 4), ui = ld8(win + kOptValues + 5);
+    st8(win + kOptValues + 3, gyro); st8(win + kOptValues + 4, ui); st8(win + kOptValues + 5, ctl);
+}
+void values_to_game(uint32_t win) {
+    const uint8_t gyro = ld8(win + kOptValues + 3), ui = ld8(win + kOptValues + 4), ctl = ld8(win + kOptValues + 5);
+    st8(win + kOptValues + 3, ctl); st8(win + kOptValues + 4, gyro); st8(win + kOptValues + 5, ui);
+}
+bool options_mode(uint32_t win) { return ld32(win + 0x118) == 0; }  // the Options window (not Miiverse's)
+}  // namespace
+
+extern "C" void f_026D7828_orig(Cpu* c);
+extern "C" void hook_026D7828(Cpu* c) {  // the options window constructed (each scene): the item order for the mode
+    swap_desc_order(gamepad_mode());
+    f_026D7828_orig(c);
+}
+// options list setup, Options mode: the count (r7 = 6) stored at +0x120
+extern "C" void site_026D8514(Cpu* c) {
+    if (g_opt_reordered && c->r[7] == 6) c->r[7] = 5;
+}
+// the values loaded, the visible rows not filled yet (r31 the window)
+extern "C" void site_026D5D84(Cpu* c) {
+    if (g_opt_reordered && options_mode(c->r[31])) values_to_reordered(c->r[31]);
+}
+extern "C" void f_026D6DD4_orig(Cpu* c);
+extern "C" void hook_026D6DD4(Cpu* c) {  // save: by fixed offsets
+    const uint32_t win = c->r[3];
+    const bool swap = g_opt_reordered && options_mode(win);
+    if (swap) values_to_game(win);
+    f_026D6DD4_orig(c);
+    if (swap) values_to_reordered(win);
+}
+extern "C" void f_026D87D0_orig(Cpu* c);
+extern "C" void hook_026D87D0(Cpu* c) {  // the Controller item's callback: its value at +0x107
+    const uint32_t win = c->r[3];
+    const bool swap = g_opt_reordered && options_mode(win);
+    if (swap) values_to_game(win);
+    f_026D87D0_orig(c);
+    if (swap) values_to_reordered(win);
+}

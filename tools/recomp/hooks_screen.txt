@@ -1,3 +1,8 @@
 # Screen mode (runtime/src/screen_mode.cpp). @ADDR = instruction hook.
 @0270ACC8 # play start (0270AB10): bl 02618094(mgr, 1 = TV play), r4 the mode
 @0270AC04 # file select, StateID_ControllerSelect: bl changeState(picker widget, StateID_Display)
+026D7828  # options window constructor: the item order without Controller (GamePad mode)
+@026D8514 # options list setup: st32 +0x120 (the item count, 6), r7 the count
+@026D5D84 # options values loaded (+0x104..+0x109), before the visible rows are filled
+026D6DD4  # options values saved (Gyroscope +0x108, UI Display +0x109 by fixed offset)
+026D87D0  # Controller item callback (its value +0x107 by fixed offset)
