@@ -266,7 +266,9 @@ void update() {
         if (held & m.hid) s.buttons |= m.vpad;
     // Minus is shared with the settings menu (held half a second opens it, overlay.cpp) and ZL + ZR + Minus
     // (TV / GamePad picture): the game gets a Minus only as a short press that did neither, after its release
-    // (a pulse of 100 ms, read by a few game frames). In GamePad mode the game's Minus is Off-TV Play.
+    // (a pulse of 100 ms, read by a few game frames). With the Pro Controller it is the game's Minus; with the
+    // GamePad it is the game's Plus (the paused item menu), since the GamePad's Minus would leave Off-TV Play
+    // (screen_mode.cpp), and the window shows only the GamePad picture.
     {
         static bool down = false, other = false;  // other: this press opened / closed the menu or was the combo
         static u64 since = 0, pulseUntil = 0;
@@ -281,7 +283,7 @@ void update() {
             if (!other && !overlay::is_open()) pulseUntil = now + 100000000ull;
         }
         s.buttons &= ~uint32_t(kMinus);
-        if (now < pulseUntil) s.buttons |= kMinus;
+        if (now < pulseUntil) s.buttons |= g_pro.load(std::memory_order_relaxed) ? kMinus : kPlus;
     }
     // both sticks clicked together: a capture of the next frame (its passes in the log, its pictures on the
     // SD card) for a picture that goes wrong, when turned on in the Switch tab; the game gets the clicks as usual
