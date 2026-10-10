@@ -33,7 +33,8 @@ extern uint64_t g_reg_gen[kRegCats];
 uint32_t color_buffer_address(const GX2::GX2ColorBuffer* cb);
 // the layers a color buffer is drawn as: a 2D array's slices, a 3D buffer's depth slices at its view's level, else 1
 uint32_t color_buffer_slices(const GX2::GX2ColorBuffer* cb);
-LatteFetchShader* build_fetch_shader(uint32_t program);  // from our encoded fetch "program"
+constexpr uint32_t kFetchMagic = 0x57574653;  // "WWFS": our encoded fetch "program" (fetch_shader_compact.cpp)
+LatteFetchShader* build_fetch_shader(uint32_t program);  // from our encoded fetch "program" (fetch_shader_compact.cpp)
 // Uncapped (debug only: settings overlay > Graphics; WWHD_UNCAPPED=1 for any renderer, and the older
 // WWHD_VK_UNCAPPED=1 with Vulkan): flips no longer wait for the virtual vsync and presentation no
 // longer waits for the display (Metal: displaySyncEnabled off; Vulkan: immediate or mailbox), so the

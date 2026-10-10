@@ -27,7 +27,7 @@
 
 namespace render { uint64_t frame_count(); }
 
-namespace gfxdk { std::string seen_programs(); }  // gfx/deko/shaders_dk.cpp
+namespace gfxdk { std::string seen_programs(); size_t seen_programs_file(const char* path); size_t set_manifest(bool on); }  // gfx/deko/shaders_dk.cpp
 
 namespace debug_switch {
 namespace {
@@ -177,7 +177,21 @@ debugsrv::Reply poke(const debugsrv::Args& a) {
 }
 
 // the shader programs the game has drawn with (gfx/deko/shaders_dk.cpp): for precompiling from the game's files
-debugsrv::Reply programs(const debugsrv::Args&) { return debugsrv::ok(gfxdk::seen_programs()); }
+debugsrv::Reply programs(const debugsrv::Args& a) {
+    if (!a.empty() && a[0] == "file") {  // whole programs into programs.bin (get it with the get command)
+        const size_t n = gfxdk::seen_programs_file("sdmc:/switch/wwhd/programs.bin");
+        return debugsrv::ok(std::to_string(n) + " programs written to programs.bin\n");
+    }
+    return debugsrv::ok(gfxdk::seen_programs());
+}
+
+// the shader manifest (gfx/deko/shaders_dk.cpp): every shader combination met, recorded for precompiling
+debugsrv::Reply manifest(const debugsrv::Args& a) {
+    if (a.empty() || (a[0] != "on" && a[0] != "off")) return debugsrv::err("manifest on|off");
+    const size_t n = gfxdk::set_manifest(a[0] == "on");
+    return debugsrv::ok("shader manifest " + a[0] + " (shadercache_manifest.bin), " + std::to_string(n) +
+                        " combinations recorded this session\n");
+}
 
 debugsrv::Reply quit(const debugsrv::Args&) {
     debugsrv::Reply r = debugsrv::ok("quitting");
@@ -202,7 +216,8 @@ void start() {
     debugsrv::add_command("reload", "reload                 restart: the forwarder loads the NRO again (put it first)", reload);
     debugsrv::add_command("quit", "quit                   end the program", quit);
     debugsrv::add_command("peek", "peek <addr> [bytes]    game memory (MEM2) as hex words", peek);
-    debugsrv::add_command("programs", "programs               shader programs drawn: kind hash size first bytes", programs);
+    debugsrv::add_command("programs", "programs [file]        shader programs drawn: kind hash size first bytes (file: whole, programs.bin)", programs);
+    debugsrv::add_command("manifest", "manifest on|off        record shader combinations for precompiling", manifest);
     debugsrv::add_command("poke", "poke <addr> <word>     write a word of game memory (MEM2)", poke);
     debugsrv::Config c;
     c.port = g_port;

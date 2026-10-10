@@ -78,6 +78,8 @@ constexpr char kTransMagic[4] = {'W', 'D', 'T', '1'};
 constexpr uint32_t kTransVersion = 1;
 constexpr char kOfflinePath[] = "shadercache_dksh.bin";
 constexpr char kLocalPath[] = "shadercache_dksh_local.bin";
+// the shader combinations met, for precompiling them from the game's files (debug server "manifest on"; off otherwise)
+constexpr char kManifestPath[] = "shadercache_manifest.bin";
 constexpr uint8_t kGlCacheMagic[4] = {'W', 'G', 'S', '1'};
 constexpr size_t kWorkerStack = 8u << 20;  // Mesa's GLSL parser and nv50_ir recurse deeply (uam_api.h)
 // 0x3B (59), the game's own threads' priority: an application's NPDM allows 0x1C-0x3B, and 0x3C (one below
@@ -135,7 +137,7 @@ uint64_t sample_words(const uint8_t* p, uint32_t size) {
 // every distinct program the game has drawn with (debug server "programs"): its hash, size, kind and first bytes,
 // to find the game's programs in its files (the shader archives, the executable) for precompiling. Recorded when a
 // hash is computed (a new program, a changed one, or the check every 64 frames), not on every draw.
-struct SeenProgram { uint32_t size = 0; char kind = '?'; uint8_t head[64] = {}; };
+struct SeenProgram { uint32_t size = 0; char kind = '?'; uint8_t head[64] = {}; std::vector<uint8_t> bytes; };
 std::mutex g_seenMu;
 std::unordered_map<uint64_t, SeenProgram> g_seenPrograms;
 void note_program(uint64_t hash, const uint8_t* bytes, uint32_t size, char kind) {
@@ -145,6 +147,7 @@ void note_program(uint64_t hash, const uint8_t* bytes, uint32_t size, char kind)
     it->second.size = size;
     it->second.kind = kind;
     memcpy(it->second.head, bytes, std::min<uint32_t>(size, sizeof it->second.head));
+    it->second.bytes.assign(bytes, bytes + size);  // the whole program (seen_programs_file)
 }
 
 // Program memory can be reused for another program between frames, so a program's hash is checked
@@ -258,7 +261,7 @@ struct CacheFile {
     std::vector<uint8_t> pending;  // under writerMutex
     uint64_t written = 0;
 };
-CacheFile glFile{kGlCachePath}, localFile{kLocalPath}, transFile{kTransPath};
+CacheFile glFile{kGlCachePath}, localFile{kLocalPath}, transFile{kTransPath}, manifestFile{kManifestPath};
 std::mutex writerMutex;
 std::condition_variable writerCv;
 bool writerStarted = false;
@@ -280,13 +283,17 @@ void cache_writer() {
     host::set_thread_name("dk shader cache writer");
     std::unique_lock<std::mutex> lk(writerMutex);
     for (;;) {
-        writerCv.wait(lk, [] { return !glFile.pending.empty() || !localFile.pending.empty() || !transFile.pending.empty(); });
+        writerCv.wait(lk, [] {
+            return !glFile.pending.empty() || !localFile.pending.empty() || !transFile.pending.empty() ||
+                   !manifestFile.pending.empty();
+        });
         lk.unlock();
         std::this_thread::sleep_for(std::chrono::seconds(1));  // the rest of a burst goes in the same write
         lk.lock();
         write_pending(glFile, lk);
         write_pending(localFile, lk);
         write_pending(transFile, lk);
+        write_pending(manifestFile, lk);
     }
 }
 
@@ -296,7 +303,8 @@ void cache_write(CacheFile& file, const void* data, size_t size) {
     bool first;
     {
         std::lock_guard<std::mutex> lk(writerMutex);
-        first = glFile.pending.empty() && localFile.pending.empty() && transFile.pending.empty();
+        first = glFile.pending.empty() && localFile.pending.empty() && transFile.pending.empty() &&
+                manifestFile.pending.empty();
         file.pending.insert(file.pending.end(), bytes, bytes + size);
     }
     if (first) writerCv.notify_one();
@@ -1010,6 +1018,56 @@ Shader* shader_from_record(uint64_t key, bool vertex, std::pair<uint32_t, uint32
 }
 }  // namespace
 
+// ---- the manifest: each shader combination met, as numbers, so that a computer can translate and compile it
+// again from the game's own files (the program found in the game's shader archives by its hash; tools/switch: the
+// precompiler). Records, little-endian, appended to shadercache_manifest.bin by the writer thread:
+//   3 variant: u8 3, u8 vertex, u64 program hash (program_hash), u32 program size, u64 head hash (hash_bytes of
+//     its first 64 bytes: finds it among the game's files without the manifest holding any of its code), u64 GLSL
+//     hash (the check: the
+//     computer's translation must give the same GLSL), u64 fetch shader key (vertex), u16 n, n x {u16 register, u32
+//     value}: every nonzero context register (A000-A3FF), VGT_PRIMITIVE_TYPE, SQ_CONFIG and the stage's 18 texture
+//     units' resource words, a superset of what the translation reads (the key's gather_state and texture state)
+//   2 fetch shader, once a key: u8 2, u64 key, u32 size, its bytes (the port's GX2 generates them, not the game)
+std::atomic<bool> g_manifest{false};
+std::unordered_set<uint64_t> manifestKeys, manifestFetch;  // (render thread)
+void manifest_record(const uint32_t* regs, bool vertex, uint64_t base, uint32_t address, uint32_t size,
+                     uint64_t glslHash, uint64_t fsKey, uint64_t key) {
+    if (!g_manifest.load(std::memory_order_relaxed) || !manifestKeys.insert(key).second) return;
+    if (!manifestFile.f) {
+        manifestFile.f = fopen(kManifestPath, "ab");
+        if (!manifestFile.f) { LOG("[dk] shader manifest: cannot write %s", kManifestPath); return; }
+        if (!writerStarted) { writerStarted = true; host::start_thread(cache_writer, 128 << 10); }
+    }
+    ByteWriter w;
+    if (vertex && fsKey && manifestFetch.insert(fsKey).second) {
+        uint32_t address, fsize;
+        if (fetch_shader_range(regs, address, fsize, nullptr)) {
+            w.put<uint8_t>(2);
+            w.put(fsKey);
+            w.put(fsize);
+            const uint8_t* bytes = ppc_ptr(address);
+            w.b.insert(w.b.end(), bytes, bytes + fsize);
+        }
+    }
+    std::vector<std::pair<uint16_t, uint32_t>> words;
+    auto add = [&](uint32_t r) { if (regs[r]) words.emplace_back(uint16_t(r), regs[r]); };
+    for (uint32_t r = 0xA000; r < 0xA400; r++) add(r);
+    add(Latte::REGADDR::VGT_PRIMITIVE_TYPE);
+    add(Latte::REGADDR::SQ_CONFIG);
+    const uint32_t tex = vertex ? Latte::REGADDR::SQ_TEX_RESOURCE_WORD0_N_VS : Latte::REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS;
+    for (uint32_t r = tex; r < tex + LATTE_NUM_MAX_TEX_UNITS * 7; r++) add(r);
+    w.put<uint8_t>(3);  // (1: the same without the head hash, first sample records)
+    w.put<uint8_t>(vertex);
+    w.put(base ^ (vertex ? 0x1111 : 0x2222));  // the program's own hash
+    w.put(size);
+    w.put(hash_bytes(ppc_ptr(address), std::min<uint32_t>(size, 64)));
+    w.put(glslHash);
+    w.put(vertex ? fsKey : uint64_t(0));
+    w.put(uint16_t(words.size()));
+    for (auto& [r, v] : words) { w.put(r); w.put(v); }
+    cache_write(manifestFile, w.b.data(), w.b.size());
+}
+
 Shader* translate(const uint32_t* regs, bool vertex, LatteFetchShader* fetch, uint64_t fsKey, uint64_t frame,
                   uint64_t coreHash) {
     uint32_t start = vertex ? mmSQ_PGM_START_VS : mmSQ_PGM_START_PS;
@@ -1041,7 +1099,10 @@ Shader* translate(const uint32_t* regs, bool vertex, LatteFetchShader* fetch, ui
     ScopedTime timer{R.perf.shaderNs};
     if (g_transCache)  // (round 45) a variant of an earlier session: rebuilt from its record, no decompiler
         if (auto it = storedTrans.find(key); it != storedTrans.end())
-            if (Shader* sh = shader_from_record(key, vertex, it->second)) return sh;
+            if (Shader* sh = shader_from_record(key, vertex, it->second)) {
+                manifest_record(regs, vertex, base, address, size, sh->glslHash, fsKey, key);
+                return sh;
+            }
     R.perf.shaders++;
     g_total.translations++;
     auto owned = std::make_unique<Shader>();
@@ -1104,6 +1165,7 @@ Shader* translate(const uint32_t* regs, bool vertex, LatteFetchShader* fetch, ui
     cache_gl_source(shader->glslHash, vertex, glsl);
     cache_gl_translation(shader, base, units, output.resourceMappingGL, uint32_t(output.uniformOffsetsGL.count_uniformRegister));
     cache_dk_translation(shader, base, units);
+    manifest_record(regs, vertex, base, address, size, shader->glslHash, fsKey, key);
     shader->code = code_for(shader, std::move(glsl));
     refresh(shader);
     if (g_waitForWorker && shader->pending()) {
@@ -1152,11 +1214,14 @@ void shaders_init(void (*progress)(size_t done, size_t total)) {
             LOG("[dk] shader budget: draws of shaders the compiler has not finished are skipped; up to %d DKSH loads "
                 "a frame (WWHD_DK_SHADER_BUDGET)", g_loadBudget);
     }
-    // the two DKSH files, whole, into code memory: progress counts their bytes read, then loaded
+    // the two DKSH files, whole, into code memory: progress counts their bytes read, then loaded.
+    // WWHD_DK_LOCAL_CACHE=0 (settings.ini [dev]): the console's own file is neither read nor written, as on a fresh
+    // install (with WWHD_DK_TRANSLATION_CACHE=0 too): to see what the offline cache alone covers; the file is kept.
+    static const bool useLocal = [] { const char* e = getenv("WWHD_DK_LOCAL_CACHE"); return !e || atoi(e) != 0; }();
     struct stat st;
     size_t total = 0;
     for (const char* p : {kOfflinePath, kLocalPath})
-        if (stat(p, &st) == 0) total += size_t(st.st_size) * 2;
+        if ((p == kOfflinePath || useLocal) && stat(p, &st) == 0) total += size_t(st.st_size) * 2;
     total = std::max<size_t>(total, 1);
     size_t done = 0;
     if (progress) progress(0, total);
@@ -1166,6 +1231,10 @@ void shaders_init(void (*progress)(size_t done, size_t total)) {
     std::vector<uint8_t> localKeep;  // the local file's valid part, when it must be rewritten
     for (int which = 0; which < 2; which++) {
         const char* path = which ? kLocalPath : kOfflinePath;
+        if (which && !useLocal) {
+            LOG("[dk] shader cache %s: not used (WWHD_DK_LOCAL_CACHE=0): neither read nor written this session", path);
+            continue;
+        }
         const uint64_t r0 = now_ns();
         std::vector<uint8_t> data = read_file(path, progress, done, total);
         readNs += now_ns() - r0;
@@ -1235,15 +1304,15 @@ void shaders_init(void (*progress)(size_t done, size_t total)) {
     }
     if (progress) progress(total, total);
     // the local file: started again unless valid; then appended
-    if (!localValid || !localKeep.empty()) {
+    if (useLocal && (!localValid || !localKeep.empty())) {
         if (FILE* f = fopen(kLocalPath, "wb")) {
             const std::vector<uint8_t> bytes = localValid ? localKeep : wdk1_header(uamId);
             fwrite(bytes.data(), 1, bytes.size(), f);
             fclose(f);
         }
     }
-    localFile.f = fopen(kLocalPath, "ab");
-    if (!localFile.f) LOG("[dk] shader cache: cannot write %s: what this console compiles is not kept", kLocalPath);
+    localFile.f = useLocal ? fopen(kLocalPath, "ab") : nullptr;
+    if (useLocal && !localFile.f) LOG("[dk] shader cache: cannot write %s: what this console compiles is not kept", kLocalPath);
     const uint64_t t1 = now_ns();
     LOG("[dk] shader caches (uamId %016llx): %zu DKSH from %s, %zu from %s (%zu and %zu recorded as failed); %zu did "
         "not load; %.0f ms (reading %.0f ms), game shader code %llu KiB of %u MiB",
@@ -1688,5 +1757,32 @@ std::string seen_programs() {
         out += '\n';
     }
     return out;
+}
+// the programs seen so far, whole, into a file (debug server "programs file"): records of kind (1 byte), hash (8),
+// size (4, little-endian), then the program's bytes as they were in memory
+size_t seen_programs_file(const char* path) {
+    std::lock_guard<std::mutex> lk(g_seenMu);
+    FILE* f = fopen(path, "wb");
+    if (!f) return 0;
+    for (auto& [hash, p] : g_seenPrograms) {
+        const uint32_t size = uint32_t(p.bytes.size());
+        fwrite(&p.kind, 1, 1, f);
+        fwrite(&hash, 8, 1, f);
+        fwrite(&size, 4, 1, f);
+        fwrite(p.bytes.data(), 1, size, f);
+    }
+    fclose(f);
+    return g_seenPrograms.size();
+}
+// the shader manifest on or off (debug server "manifest"): the number of combinations recorded this session
+size_t set_manifest(bool on) {
+    if (g_manifest.exchange(on) != on) LOG("[dk] shader manifest %s (%s)", on ? "on" : "off", kManifestPath);
+    if (!on) {  // closed, so that it can be read (the debug server cannot open a file the game writes); reopened on "on"
+        std::unique_lock<std::mutex> lk(writerMutex);
+        write_pending(manifestFile, lk);
+        if (manifestFile.f) fclose(manifestFile.f);
+        manifestFile.f = nullptr;
+    }
+    return manifestKeys.size();
 }
 }  // namespace gfxdk
