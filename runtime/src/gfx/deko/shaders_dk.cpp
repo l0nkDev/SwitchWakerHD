@@ -132,21 +132,38 @@ uint64_t sample_words(const uint8_t* p, uint32_t size) {
     return h;
 }
 
+// every distinct program the game has drawn with (debug server "programs"): its hash, size, kind and first bytes,
+// to find the game's programs in its files (the shader archives, the executable) for precompiling. Recorded when a
+// hash is computed (a new program, a changed one, or the check every 64 frames), not on every draw.
+struct SeenProgram { uint32_t size = 0; char kind = '?'; uint8_t head[64] = {}; };
+std::mutex g_seenMu;
+std::unordered_map<uint64_t, SeenProgram> g_seenPrograms;
+void note_program(uint64_t hash, const uint8_t* bytes, uint32_t size, char kind) {
+    std::lock_guard<std::mutex> lk(g_seenMu);
+    auto [it, fresh] = g_seenPrograms.try_emplace(hash);
+    if (!fresh) return;
+    it->second.size = size;
+    it->second.kind = kind;
+    memcpy(it->second.head, bytes, std::min<uint32_t>(size, sizeof it->second.head));
+}
+
 // Program memory can be reused for another program between frames, so a program's hash is checked
 // once per frame: by 32 sampled words, and fully every 64 frames (staggered by address)
-uint64_t program_hash_at(ProgramHash& entry, uint32_t address, uint32_t size, uint64_t frame) {
+uint64_t program_hash_at(ProgramHash& entry, uint32_t address, uint32_t size, uint64_t frame, char kind) {
     if (entry.frame != frame) {
         const uint8_t* bytes = ppc_ptr(address);
         uint64_t sample = sample_words(bytes, size);
-        if (entry.frame == ~uint64_t{0} || sample != entry.sample || ((frame + ((address * 0x9E3779B1u) >> 20)) & 63) == 0)
+        if (entry.frame == ~uint64_t{0} || sample != entry.sample || ((frame + ((address * 0x9E3779B1u) >> 20)) & 63) == 0) {
             entry.hash = hash_bytes(bytes, size);
+            note_program(entry.hash, bytes, size, kind);
+        }
         entry.sample = sample;
         entry.frame = frame;
     }
     return entry.hash;
 }
-uint64_t program_hash(uint32_t address, uint32_t size, uint64_t frame) {
-    return program_hash_at(programHashes[(uint64_t(address) << 32) | size], address, size, frame);
+uint64_t program_hash(uint32_t address, uint32_t size, uint64_t frame, char kind) {  // kind: 'F' fetch, 'V', 'P'
+    return program_hash_at(programHashes[(uint64_t(address) << 32) | size], address, size, frame, kind);
 }
 
 // four independent multiply chains (one chain is latency-bound); for in-memory keys only
@@ -895,7 +912,7 @@ LatteFetchShader* get_fetch_shader(const uint32_t* regs, uint64_t* keyOut, uint6
     uint32_t address, size;
     bool compact = false;
     if (!fetch_shader_range(regs, address, size, &compact)) return nullptr;
-    uint64_t key = program_hash(address, size, frame);
+    uint64_t key = program_hash(address, size, frame, 'F');
     if (keyOut) *keyOut = key;
     if (auto it = fetchShaders.find(key); it != fetchShaders.end()) return it->second;
     auto* fetch = compact ? gx2::build_fetch_shader(address)
@@ -908,8 +925,8 @@ LatteFetchShader* get_fetch_shader(const uint32_t* regs, uint64_t* keyOut, uint6
 // a program's entry in programHashes (map nodes do not move; reset_shader_memoization, which clears the map,
 // also advances R.shaderEpoch, which drops the references)
 void* program_hash_ref(uint32_t address, uint32_t size) { return &programHashes[(uint64_t(address) << 32) | size]; }
-uint64_t program_hash_of(void* ref, uint32_t address, uint32_t size, uint64_t frame) {
-    return program_hash_at(*static_cast<ProgramHash*>(ref), address, size, frame);
+uint64_t program_hash_of(void* ref, uint32_t address, uint32_t size, uint64_t frame, char kind) {
+    return program_hash_at(*static_cast<ProgramHash*>(ref), address, size, frame, kind);
 }
 
 uint64_t shader_state_hash(const uint32_t* regs, bool vertex, uint64_t* core) {
@@ -998,7 +1015,7 @@ Shader* translate(const uint32_t* regs, bool vertex, LatteFetchShader* fetch, ui
     uint32_t start = vertex ? mmSQ_PGM_START_VS : mmSQ_PGM_START_PS;
     uint32_t address = regs[start] << 8, size = regs[start + 1] << 3;
     if (!address || !size || size > 0x100000 || uint64_t(address) + size > 0x100000000ull) return nullptr;
-    uint64_t base = program_hash(address, size, frame) ^ (vertex ? 0x1111 : 0x2222);
+    uint64_t base = program_hash(address, size, frame, vertex ? 'V' : 'P') ^ (vertex ? 0x1111 : 0x2222);
     // the key holds the texture state of only the units the program samples (known after its first
     // translation), as gfx/gl. Declared inputs no fetch attribute fills turn the decompiler's strict multiplication
     // on: they are in the key (the keys and translation records of the other shaders stay as they were).
@@ -1658,4 +1675,18 @@ ShaderStats shader_stats_take() {
     return stats_since(taken);
 }
 
+// the programs seen so far, a line each: kind (F fetch, V vertex, P pixel), hash, size, the first bytes in hex
+std::string seen_programs() {
+    std::lock_guard<std::mutex> lk(g_seenMu);
+    std::string out;
+    char line[200];
+    for (auto& [hash, p] : g_seenPrograms) {
+        int n = snprintf(line, sizeof line, "%c %016llx %u ", p.kind, (unsigned long long)hash, p.size);
+        for (uint32_t i = 0; i < std::min<uint32_t>(p.size, sizeof p.head) && n < int(sizeof line) - 3; i++)
+            n += snprintf(line + n, sizeof line - n, "%02x", p.head[i]);
+        out += line;
+        out += '\n';
+    }
+    return out;
+}
 }  // namespace gfxdk

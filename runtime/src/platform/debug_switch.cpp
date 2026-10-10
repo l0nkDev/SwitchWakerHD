@@ -27,6 +27,8 @@
 
 namespace render { uint64_t frame_count(); }
 
+namespace gfxdk { std::string seen_programs(); }  // gfx/deko/shaders_dk.cpp
+
 namespace debug_switch {
 namespace {
 std::atomic<bool> g_quit{false};
@@ -174,6 +176,9 @@ debugsrv::Reply poke(const debugsrv::Args& a) {
     return debugsrv::ok(b);
 }
 
+// the shader programs the game has drawn with (gfx/deko/shaders_dk.cpp): for precompiling from the game's files
+debugsrv::Reply programs(const debugsrv::Args&) { return debugsrv::ok(gfxdk::seen_programs()); }
+
 debugsrv::Reply quit(const debugsrv::Args&) {
     debugsrv::Reply r = debugsrv::ok("quitting");
     r.after = [] {
@@ -197,6 +202,7 @@ void start() {
     debugsrv::add_command("reload", "reload                 restart: the forwarder loads the NRO again (put it first)", reload);
     debugsrv::add_command("quit", "quit                   end the program", quit);
     debugsrv::add_command("peek", "peek <addr> [bytes]    game memory (MEM2) as hex words", peek);
+    debugsrv::add_command("programs", "programs               shader programs drawn: kind hash size first bytes", programs);
     debugsrv::add_command("poke", "poke <addr> <word>     write a word of game memory (MEM2)", poke);
     debugsrv::Config c;
     c.port = g_port;

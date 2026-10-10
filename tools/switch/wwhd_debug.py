@@ -16,6 +16,9 @@ The console's address: --host, else WWHD_SWITCH_HOST, else the first line of bui
   wwhd_debug.py get REMOTE [LOCAL] | put LOCAL REMOTE | ls [REMOTE] | rm REMOTE | mkdir REMOTE
   wwhd_debug.py logs | lastlog [LOCAL]    session logs on the SD card; the newest one (also while it runs)
   wwhd_debug.py crashes [--fetch DIR]     Atmosphere's crash reports
+  wwhd_debug.py shaders [--list GL] [--no-upload]
+                                          the console's shader list compiled on this computer, put back as
+                                          shadercache_dksh.bin (loaded at the game's next start)
   wwhd_debug.py wait [--seconds N]        until the server answers (after a reload)
   wwhd_debug.py quit | reload | ping | help
   wwhd_debug.py raw COMMAND ARGS...       any command, its reply printed
@@ -300,6 +303,46 @@ def cmd_crashes(args):
             cmd_get(args)
 
 
+REMOTE_SHADER_LIST = "shadercache_gl.bin"     # the shaders the console has met, as their GLSL (it adds to it)
+REMOTE_SHADER_CACHE = "shadercache_dksh.bin"  # the offline cache, compiled on a computer, read at start
+SHADER_DIR = REPO / "build" / "shaders"
+
+
+def cmd_shaders(args):
+    """Fetches the console's shader list, compiles it here (tools/switch/dksh_cache, in a container) and uploads
+    the result as the offline cache. The game reads it at its next start, so shaders it has met are not compiled
+    on the console again; after a shader compiler change (the uamId in the log) this rebuilds them all at once."""
+    SHADER_DIR.mkdir(parents=True, exist_ok=True)
+    gl = Path(args.list) if args.list else SHADER_DIR / REMOTE_SHADER_LIST
+    if not args.list:
+        c = connect(args)
+        try:
+            with open(gl, "wb") as f:
+                c.command("get", REMOTE_SHADER_LIST, out=f, timeout=300.0)
+        finally:
+            c.close()
+        print(f"{REMOTE_SHADER_LIST} -> {gl} ({gl.stat().st_size} bytes)")
+    if gl.stat().st_size == 0:
+        sys.exit(f"{gl} is empty: the console has not met any shader yet (play a little first)")
+    out = SHADER_DIR / REMOTE_SHADER_CACHE
+    print("compiling (tools/switch/dksh_cache, the first run builds its container)...", flush=True)
+    import subprocess
+    r = subprocess.run(["bash", str(REPO / "tools" / "switch" / "dksh_cache" / "build.sh"), "build",
+                        str(gl.relative_to(REPO) if gl.is_relative_to(REPO) else gl), str(out.relative_to(REPO))],
+                       cwd=REPO)
+    if r.returncode != 0 or not out.exists():
+        sys.exit("compiling the shader list failed (see above)")
+    if args.no_upload:
+        print(f"{out}: not uploaded (--no-upload)")
+        return
+    c = connect(args)
+    try:
+        put_file(c, out, REMOTE_SHADER_CACHE)
+    finally:
+        c.close()
+    print("restart the game to load it (the log then says how many shaders it loaded from it)")
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--host", default=default_host())
@@ -339,6 +382,9 @@ def main():
     sp.add_argument("local", nargs="?")
     sp = sub.add_parser("crashes")
     sp.add_argument("--fetch", metavar="DIR", help="download the reports not yet in DIR")
+    sp = sub.add_parser("shaders")
+    sp.add_argument("--list", metavar="GL", help="compile this shadercache_gl.bin instead of fetching the console's")
+    sp.add_argument("--no-upload", action="store_true", help="only compile (into build/shaders/)")
     sp = sub.add_parser("wait")
     sp.add_argument("--seconds", type=float, default=120)
 
@@ -361,7 +407,7 @@ def main():
             print("ready")
         else:
             {"log": cmd_log, "get": cmd_get, "put": cmd_put, "deploy": cmd_deploy, "shot": cmd_shot,
-             "lastlog": cmd_lastlog, "crashes": cmd_crashes}[args.cmd](args)
+             "lastlog": cmd_lastlog, "crashes": cmd_crashes, "shaders": cmd_shaders}[args.cmd](args)
     except ServerError as e:
         sys.exit(f"console: {e}")
     except BrokenPipeError:  # (the output went to a pipe that closed: head, grep -m)

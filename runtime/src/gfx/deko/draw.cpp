@@ -342,7 +342,7 @@ bool is_occlusion(const uint32_t* r, bool vertex) {
     static uint32_t addrSeen[2] = {};
     static bool result[2] = {};
     if (checked[vertex] == frame && addrSeen[vertex] == addr) return result[vertex];
-    const uint64_t h = program_hash_of(program_hash_ref(addr, size), addr, size, frame);
+    const uint64_t h = program_hash_of(program_hash_ref(addr, size), addr, size, frame, '?');
     const bool match = size == kOcclusionSize[vertex] && h == kOcclusionHash[vertex];
     static uint32_t logged[2] = {};  // (other programs of that size come and go every frame: only new matches)
     if (match && logged[vertex] != addr) {
@@ -1184,13 +1184,13 @@ void draw_impl(const uint32_t* r, uint32_t prim, uint32_t count, uint32_t indexT
             if (c.fsRef) {
                 uint32_t fsAddr, fsSize;
                 valid = fetch_shader_range(r, fsAddr, fsSize) && fsAddr == c.fsAddr && fsSize == c.fsSize &&
-                        program_hash_of(c.fsRef, fsAddr, fsSize, frame) == c.fsKey;
+                        program_hash_of(c.fsRef, fsAddr, fsSize, frame, 'F') == c.fsKey;
             } else {
                 uint64_t fsKey = 0;
                 valid = get_fetch_shader(r, &fsKey, frame) == c.fs;
             }
-            valid = valid && program_hash_of(c.vsRef, c.programs[2] << 8, c.programs[3] << 3, frame) == c.vsHash &&
-                    program_hash_of(c.psRef, c.programs[4] << 8, c.programs[5] << 3, frame) == c.psHash;
+            valid = valid && program_hash_of(c.vsRef, c.programs[2] << 8, c.programs[3] << 3, frame, 'V') == c.vsHash &&
+                    program_hash_of(c.psRef, c.programs[4] << 8, c.programs[5] << 3, frame, 'P') == c.psHash;
             if (R.timedDraw) g_lookup.validateNs += (now_ns() - t0) * kDrawTimeSample;
             if (!valid) return false;
             c.frame = frame;
@@ -1246,8 +1246,8 @@ void draw_impl(const uint32_t* r, uint32_t prim, uint32_t count, uint32_t indexT
             const bool hashable = vsAddr && vsSize && psAddr && psSize;
             c.vsRef = hashable ? program_hash_ref(vsAddr, vsSize) : nullptr;
             c.psRef = hashable ? program_hash_ref(psAddr, psSize) : nullptr;
-            c.vsHash = hashable ? program_hash_of(c.vsRef, vsAddr, vsSize, frame) : 0;
-            c.psHash = hashable ? program_hash_of(c.psRef, psAddr, psSize, frame) : 0;
+            c.vsHash = hashable ? program_hash_of(c.vsRef, vsAddr, vsSize, frame, 'V') : 0;
+            c.psHash = hashable ? program_hash_of(c.psRef, psAddr, psSize, frame, 'P') : 0;
             c.fsRef = nullptr;
             if (fs && fetch_shader_range(r, c.fsAddr, c.fsSize)) {
                 c.fsRef = program_hash_ref(c.fsAddr, c.fsSize);

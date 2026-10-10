@@ -104,7 +104,7 @@ void prefetch_shader_caches(const Shader* sh);
 LatteFetchShader* get_fetch_shader(const uint32_t* regs, uint64_t* keyOut, uint64_t frame);
 // the hash of the program at address (checked once per frame), through a reference to its entry
 void* program_hash_ref(uint32_t address, uint32_t size);
-uint64_t program_hash_of(void* ref, uint32_t address, uint32_t size, uint64_t frame);
+uint64_t program_hash_of(void* ref, uint32_t address, uint32_t size, uint64_t frame, char kind);  // kind: F, V, P (programs log)
 // hash of every register (other than the program's) that translation reads; core: the same without the
 // texture units (translate adds those of the units the program samples)
 uint64_t shader_state_hash(const uint32_t* regs, bool vertex, uint64_t* core);
