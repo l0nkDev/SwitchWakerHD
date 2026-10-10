@@ -34,6 +34,7 @@ void set_resolution_profile(float scale, bool dynamic);
 enum DrawOpt : int {
     kOptFixedSkip, kOptDepthOnly, kOptTexSharedCache, kOptVtxLayoutCache, kOptBigSubmits, kOptProfiler, kOptPrefetch,
     kOptRegGens,  // round 41: targets, fixed state and viewport skipped while their registers are unchanged
+    kOptSkipTv,   // the TV picture not drawn while the window shows the GamePad's (Off-TV Play; WWHD_DK_SKIP_TV)
     kDrawOpts
 };
 bool draw_opt(int which);

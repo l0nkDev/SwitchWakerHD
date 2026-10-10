@@ -981,13 +981,13 @@ void frame_stats() {
         auto kib = [&](uint64_t bytes) { return perFrame(bytes) / 1024.0; };
         const uint64_t lookups = executed + k.noFetchShader + k.shaderPending + k.shaderFailed;
         LOG("[dk] draws per frame: %.0f executed; skipped %.1f shader pending, %.1f shader failed, %.1f no fetch shader, "
-            "%.1f no target, %.1f empty scissor, %.1f stream full, %.1f unsupported, %.1f GamePad; us per draw: total %.1f "
+            "%.1f no target, %.1f empty scissor, %.1f stream full, %.1f unsupported, %.1f GamePad, %.1f TV; us per draw: total %.1f "
             "= lookup %.1f + indices %.1f + resources %.1f + state %.1f + submit %.1f; memo %.0f%% combos %.0f%% texture "
             "cache %.0f%% of %.0f lookups/frame; KiB/frame: vertices %.0f, indices %.0f, uniforms %.0f, stream %.0f "
             "(%.0f reused, copy %.1f ms/s); submits %.1f/frame (%.1f for draws, %.1f ms/s); GamePad draws %.1f/frame",
             perFrame(executed), perFrame(k.shaderPending), perFrame(k.shaderFailed), perFrame(k.noFetchShader),
             perFrame(k.noTarget), perFrame(k.scissorEmpty), perFrame(k.streamFull), perFrame(k.unsupported),
-            perFrame(p.gamepadSkipped), us(p.drawNs), us(p.lookupNs), us(p.indexNs), us(p.resourceNs), us(p.stateNs),
+            perFrame(p.gamepadSkipped), perFrame(p.tvSkipped), us(p.drawNs), us(p.lookupNs), us(p.indexNs), us(p.resourceNs), us(p.stateNs),
             us(p.submitNs), pct(p.memoHits, lookups), pct(p.comboHits, lookups), pct(p.textureCacheHits, p.textureLookups),
             perFrame(p.textureLookups), kib(p.vertexBytes), kib(p.indexBytes), kib(p.uboBytes), kib(p.streamBytes),
             kib(p.reusedBytes), ms(p.copyNs), perFrame(p.flushes), perFrame(p.midFrameSubmits), ms(p.flushNs),
@@ -1041,6 +1041,7 @@ void frame_stats() {
 }
 
 }  // namespace
+std::atomic<bool> g_padShown{false};  // the last frame presented the GamePad picture (skip_tv, draw.cpp)
 
 // GPU time per render pass (dk_draw.h): a timestamp in sampled frames
 void gpu_pass_mark(const char* kind, const Surface* color, const Surface* depth) {
@@ -1164,6 +1165,7 @@ void present() {
     // the GamePad picture instead of the TV's while switched to it (ZL + ZR + Minus); the TV's while there is none
     static int padShown = -1;
     const PresentSource pad = g_gamepadView.load(std::memory_order_relaxed) ? gamepad_source() : PresentSource{};
+    g_padShown.store(pad.surface != nullptr, std::memory_order_relaxed);
     if (int(pad.surface != nullptr) != padShown) {
         padShown = pad.surface != nullptr;
         LOG("[dk] frame %llu: the window shows the %s picture", (unsigned long long)frame, padShown ? "GamePad" : "TV");
@@ -1447,6 +1449,7 @@ bool draw_opt(int which) {
     case kOptProfiler: return rprof::enabled();
     case kOptPrefetch: return g_prefetch.load(std::memory_order_relaxed);
     case kOptRegGens: return g_regGens.load(std::memory_order_relaxed);
+    case kOptSkipTv: return g_skipTv.load(std::memory_order_relaxed);
     default: return false;
     }
 }
@@ -1460,7 +1463,8 @@ void set_draw_opt(int which, bool on) {
         "vertex layouts kept per vertex shader (WWHD_DK_VTX_LAYOUT_CACHE)",
         "a submit every 1024 draws instead of 256 (WWHD_DK_SUBMIT_DRAWS)", "render-thread profiler (WWHD_PROFILE)",
         "shader data prefetched at each draw (WWHD_DK_PREFETCH)",
-        "targets, fixed state and viewport skipped while their registers are unchanged (WWHD_DK_REG_GENS)"};
+        "targets, fixed state and viewport skipped while their registers are unchanged (WWHD_DK_REG_GENS)",
+        "the TV picture not drawn while the window shows the GamePad's (WWHD_DK_SKIP_TV)"};
     switch (which) {
     case kOptFixedSkip: g_fixedSkip = on; break;
     case kOptDepthOnly: g_depthOnly = on; break;
@@ -1473,6 +1477,7 @@ void set_draw_opt(int which, bool on) {
     case kOptProfiler: rprof::set_enabled(on); break;
     case kOptPrefetch: g_prefetch = on; break;
     case kOptRegGens: g_regGens = on; break;
+    case kOptSkipTv: g_skipTv = on; break;
     }
     LOG("[dk] A/B: %s %s from frame %llu (menu)", names[which], on ? "ON" : "OFF", (unsigned long long)R.frame + 1);
 }
