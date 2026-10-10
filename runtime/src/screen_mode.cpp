@@ -76,6 +76,27 @@ extern "C" void site_0270ADD0(Cpu* c) {
     if (c->r[4] == GD(0x1049EA2C) && gamepad_mode()) c->r[4] = GD(0x1049EAB0);  // ControllerSelect -> Cancel
 }
 
+// The title screen and its intro: the game sets mode 3, the picture on both screens: the scene rendered twice, the
+// TV's at full resolution and the GamePad's at 854x480, which is the one the window shows (blurry, ~20 fps). After
+// the mode setter (02618094(mgr, mode)) the hook turns a 3 into 2, Off-TV Play: the scene rendered once, at full
+// resolution, into the GamePad picture (sharp, 30 fps; the TV picture is then skipped, gfx/deko/draw.cpp). Tried
+// on the console with the mode word changed at the title: the title, file select and Back to the title as usual.
+extern "C" void f_02618094_orig(Cpu* c);
+extern "C" void hook_02618094(Cpu* c) {
+    const uint32_t mgr = c->r[3];
+    f_02618094_orig(c);
+    if (gamepad_mode() && mgr && ld32(mgr + 0x1D0) == 3) {
+        st32(mgr + 0x1D0, 2);
+        LOG("[screen] the picture on both screens (mode 3): Off-TV Play instead (one full-resolution picture)");
+    }
+}
+
+// The mode the game starts with: the controller manager's setup (02617858) writes 3 to +0x1D0 itself, not through the
+// setter, so the first title screen and its story sequence after a start are covered here (r0 the value).
+extern "C" void site_02617874(Cpu* c) {
+    if (c->r[0] == 3 && gamepad_mode()) c->r[0] = 2;
+}
+
 // play start: 02618094(mgr, r4) with r4 = 1 (TV play)
 extern "C" void site_0270ACC8(Cpu* c) {
     if (c->r[4] == 1 && gamepad_mode()) {
