@@ -1028,7 +1028,9 @@ Shader* shader_from_record(uint64_t key, bool vertex, std::pair<uint32_t, uint32
 //     value}: every nonzero context register (A000-A3FF), VGT_PRIMITIVE_TYPE, SQ_CONFIG and the stage's 18 texture
 //     units' resource words, a superset of what the translation reads (the key's gather_state and texture state)
 //   2 fetch shader, once a key: u8 2, u64 key, u32 size, its bytes (the port's GX2 generates them, not the game)
-std::atomic<bool> g_manifest{false};
+// on from the start with WWHD_DK_MANIFEST=1 (settings.ini [dev]: the title's and the boot's shaders too), or with the
+// debug server's "manifest on"
+std::atomic<bool> g_manifest{[] { const char* e = getenv("WWHD_DK_MANIFEST"); return e && atoi(e) != 0; }()};
 std::unordered_set<uint64_t> manifestKeys, manifestFetch;  // (render thread)
 void manifest_record(const uint32_t* regs, bool vertex, uint64_t base, uint32_t address, uint32_t size,
                      uint64_t glslHash, uint64_t fsKey, uint64_t key) {
