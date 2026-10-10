@@ -35,6 +35,7 @@
 
 #include "gx2/gx2_cmd.h"
 #include "runtime.h"
+#include "screen_mode.h"
 
 namespace aspect {
 namespace {
@@ -395,6 +396,7 @@ extern "C" void hook_028766CC(Cpu* c) {
 extern "C" void hook_02877100(Cpu* c) {
     using namespace aspect;
     uint32_t pane = c->r[3];
+    if (screen_mode::hidden_pane(pane)) return;  // (with its children)
     if (original()) { f_02877100_orig(c); return; }
     uint32_t parent = ld32(pane + kPaneParent);
     if (!parent) {

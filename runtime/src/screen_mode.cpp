@@ -13,6 +13,12 @@
 // current (hidden) state and writes the answer "decided, GamePad": the next frame takes the game's own GamePad
 // branch (the save list's transition, SaveDataSelect), and the picker is never shown.
 //
+// Off-TV Play draws the GamePad's touch guides over the game: with the Wind Waker out, the slide-conducting
+// guide (BatonSignList_00's N_SlideInput_00: a circle with four arrows, P_BatonSlideInput_00/01, and the
+// Wind Waker icon, P_BatonSlideInputIcon_00) sits in the middle of the picture. It is not drawn in Off-TV
+// Play (hidden_pane, from the layout Pane::Draw hook in aspect.cpp); in TV play it stays on the GamePad
+// screen with the touch controls it belongs to.
+//
 // The game's screen mode: the HD controller manager (*101F5088) +0x1D0, set by 02618094(mgr, mode):
 //   0 TV only (no GamePad), 1 TV play (the GamePad shows its own screen), 2 Off-TV Play, 3 title screen
 //   (the picture on both).
@@ -21,7 +27,10 @@
 // mix in mode 2, its layouts and flags), which is how a door keeps Off-TV Play; with mode 2 set here the first
 // scene is set up the same way. The game's own Minus (0270D668, in the GamePad menu manager's StateID_Play:
 // ChangeToTvMode / ChangeToDrcMode) then works as on the Wii U.
+#include "screen_mode.h"
+
 #include <cstdint>
+#include <cstring>
 
 #include "input.h"
 #include "runtime.h"
@@ -35,6 +44,17 @@ bool gamepad_mode() {
 #endif
 }
 }  // namespace
+
+namespace screen_mode {
+bool hidden_pane(uint32_t pane) {
+    constexpr uint32_t kControllerMgr = 0x101F5088, kMode = 0x1D0, kPaneName = 0x80;
+    static const char kSlideInput[] = "N_SlideInput_00";
+    if (!gamepad_mode()) return false;
+    if (memcmp(mem::ptr(pane + kPaneName), kSlideInput, sizeof kSlideInput)) return false;
+    const uint32_t mgr = ld32(kControllerMgr);
+    return mgr && ld32(mgr + kMode) == 2;  // Off-TV Play
+}
+}  // namespace screen_mode
 
 // file select: changeState(picker widget machine (widget+0x18), r4 = StateID_Display)
 extern "C" void site_0270AC04(Cpu* c) {
