@@ -68,6 +68,14 @@ extern "C" void site_0270AC04(Cpu* c) {
     LOG("[screen] file select: the GamePad taken as chosen (no controller picker)");
 }
 
+// file select, the save list's Back (StateID_SaveDataSelect, 0270ADA0): changeState(this+0x10, r4 =
+// StateID_ControllerSelect) goes back to the picker, which the hook above answers at once, so Back never left the
+// save list. Without the picker it goes where the picker's own Back goes: StateID_Cancel, the title screen (both
+// paths then call 0270AAEC).
+extern "C" void site_0270ADD0(Cpu* c) {
+    if (c->r[4] == GD(0x1049EA2C) && gamepad_mode()) c->r[4] = GD(0x1049EAB0);  // ControllerSelect -> Cancel
+}
+
 // play start: 02618094(mgr, r4) with r4 = 1 (TV play)
 extern "C" void site_0270ACC8(Cpu* c) {
     if (c->r[4] == 1 && gamepad_mode()) {
