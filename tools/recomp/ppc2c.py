@@ -151,6 +151,13 @@ def rc(w, dst_expr):
     return " cr0_rc(c, %s);" % dst_expr if w & 1 else ""
 
 
+def link_code(ctx, addr, tgt):
+    """The return-address store of a bl: the fork's ForkPasses.link where the context has it (the game
+    build), otherwise upstream's plain store (guest-mod Translator)."""
+    link = getattr(ctx, "link", None)
+    return link(addr, tgt) if link else "c->lr = 0x%08Xu; " % (addr + 4)
+
+
 def translate(addr, w, ctx):
     """Return C source for the instruction word `w` at `addr`."""
     op = w >> 26
@@ -171,7 +178,7 @@ def translate(addr, w, ctx):
     if op == 18:  # b / ba / bl / bla
         tgt = (sext(w & 0x03FFFFFC, 26) + (0 if w & 2 else addr)) & 0xFFFFFFFF
         if w & 1:
-            return ctx.link(addr, tgt) + ctx.call(addr, tgt)
+            return link_code(ctx, addr, tgt) + ctx.call(addr, tgt)
         return ctx.branch(addr, tgt)
 
     if op == 16:  # bc
@@ -180,7 +187,7 @@ def translate(addr, w, ctx):
         pre = "" if bo & 0x04 else "c->ctr--; "
         cond = cond_expr(bo, bi)
         if w & 1:
-            body = ctx.link(addr, tgt) + ctx.call(addr, tgt)
+            body = link_code(ctx, addr, tgt) + ctx.call(addr, tgt)
         else:
             body = ctx.branch(addr, tgt)
         return pre + ("if (%s) { %s }" % (cond, body) if cond else body)
@@ -233,8 +240,8 @@ def translate(addr, w, ctx):
     if op == 8:  # subfic
         return "{ uint64_t t = (uint64_t)(uint32_t)~%s + 0x%08Xu + 1; %s = (uint32_t)t; c->xer_ca = (uint8_t)(t >> 32); }" % (
             R(a), simm & 0xFFFFFFFF, R(d))
-    if op == 7:  # mulli
-        return "%s = (uint32_t)((int32_t)%s * %d);" % (R(d), R(a), simm)
+    if op == 7:  # mulli (unsigned: the same low 32 bits, without signed overflow in C)
+        return "%s = %s * 0x%08Xu;" % (R(d), R(a), simm & 0xFFFFFFFF)
     if op == 10:  # cmpli
         return "cr_set_u(c, %d, %s, 0x%04Xu);" % (d >> 2, R(a), uimm)
     if op == 11:  # cmpi
@@ -377,11 +384,11 @@ def translate31(addr, w, ctx, d, a, b):
     if xo9 == 200:  # subfze
         return "{ uint64_t t = (uint64_t)(uint32_t)~%s + c->xer_ca; %s = (uint32_t)t; c->xer_ca = (uint8_t)(t >> 32); }%s" % (rA, rD, rc(w, rD))
     if xo9 == 104:  # neg
-        s = "%s = (uint32_t)-(int32_t)%s;" % (rD, rA) if not oe else \
+        s = "%s = 0u - %s;" % (rD, rA) if not oe else \
             "{ uint8_t o = %s == 0x80000000u; %s = 0u - %s; c->xer_ov = o; c->xer_so |= o; }" % (rA, rD, rA)
         return s + rc(w, rD)
-    if xo9 == 235:  # mullw
-        s = "%s = (uint32_t)((int32_t)%s * (int32_t)%s);" % (rD, rA, rB)
+    if xo9 == 235:  # mullw (unsigned: the same low 32 bits, without signed overflow in C)
+        s = "%s = %s * %s;" % (rD, rA, rB)
         if oe:
             s = "{ int64_t t = (int64_t)(int32_t)%s * (int32_t)%s; %s = (uint32_t)t; uint8_t o = t != (int32_t)t; c->xer_ov = o; c->xer_so |= o; }" % (rA, rB, rD)
         return s + rc(w, rD)

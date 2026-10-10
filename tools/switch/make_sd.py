@@ -2,8 +2,8 @@
 """SwitchWakerHD: build the game for the Switch from your own dump and lay out an SD card folder.
 
 No game files, code or keys come with this repository or its releases. This script does every step on
-your computer, from your own legally dumped copy (The Wind Waker HD, USA, title 00050000-10143500,
-version 0):
+your computer, from your own legally dumped copy (The Wind Waker HD, version 0: USA, title
+00050000-10143500, or Europe, title 00050000-10143600):
 
   1. extracts the disc image (.wux/.wud) into build/sd-game/ (or takes an already extracted folder);
   2. checks that code/cking.rpx is the version the port is made for;
@@ -15,12 +15,14 @@ usage:
   make_sd.py --image GAME.wux [--out DIR]     disc key: GAME.key next to the image (16 bytes or 32 hex digits);
                                               common key: WIIU_COMMON_KEY (32 hex digits) or common.key
                                               next to the image or in the current folder
+  make_sd.py --wua GAME.wua [--out DIR]       a Cemu Wii U archive (no keys; needs: pip install zstandard)
   make_sd.py --game-dir EXTRACTED [--out DIR] a folder with code/, content/, meta/ (e.g. from Cemu's
-                                              mlc01/usr/title/00050000/10143500, without the update)
+                                              mlc01/usr/title/00050000/10143500 or 10143600, without the update)
   options: --shaders shadercache_gl.bin       also compile a shader list into shadercache_dksh.bin
            --jobs N                           parallel compiles (each needs ~1.5 GB of memory)
 
-Needs Python 3 with pycryptodome (only for --image: pip install pycryptodome) and Docker or Podman.
+Needs Python 3 with pycryptodome (only for --image: pip install pycryptodome) and Docker or Podman, or
+a native devkitPro (Windows: INSTALL.md, "Windows: devkitPro").
 What it makes contains the game: it is for your own console only; do not share it.
 """
 import argparse
@@ -49,6 +51,32 @@ def run(cmd, env=None):
         fail("this step failed (see the messages above)")
 
 
+# Native build (no Docker/Podman): used when neither is installed. On Windows it needs a devkitPro install
+# (C:/devkitPro, https://devkitpro.org) with: pacman -S switch-dev deko3d uam switch-lz4 switch-zlib
+DKP_WIN = "C:/devkitPro"
+
+
+def have_container_engine():
+    return bool(shutil.which("docker") or shutil.which("podman"))
+
+
+def native_toolchain_ok():
+    if os.name == "nt":
+        return os.path.isdir(DKP_WIN + "/devkitA64") and os.path.isfile(DKP_WIN + "/msys2/usr/bin/bash.exe")
+    return bool(os.environ.get("DEVKITPRO"))
+
+
+def native_shell(env):
+    """argv prefix that runs build.sh with devkitPro's own bash. On Windows a plain `bash` may be WSL's, so
+    devkitPro's MSYS2 bash is used, with DEVKITPRO as MSYS2 sees it."""
+    if os.name != "nt":
+        return ["bash"]
+    env["DEVKITPRO"] = "/opt/devkitpro"
+    env["CHERE_INVOKING"] = "1"  # stay in the repository folder
+    env["MSYS2_PATH_TYPE"] = "inherit"  # keep the Windows PATH
+    return [DKP_WIN + "/msys2/usr/bin/bash.exe", "-l"]
+
+
 def extract(image):
     try:
         import Crypto.Cipher.AES  # noqa: F401
@@ -67,30 +95,78 @@ def extract(image):
     return dst
 
 
+def extract_wua(archive):
+    try:
+        import zstandard  # noqa: F401
+    except ImportError:
+        fail("extracting a .wua needs zstandard: python -m pip install zstandard")
+    dst = os.path.join(ROOT, "build", "sd-game")
+    tmp = dst + ".partial"
+    shutil.rmtree(tmp, ignore_errors=True)
+    run([sys.executable, "-I", os.path.join(ROOT, "tools", "wuaextract.py"), archive, "extract", tmp])
+    if not setup.valid_game_folder(tmp):
+        fail("the extracted files are incomplete (no code/cking.rpx, content/ or meta/meta.xml)")
+    shutil.rmtree(dst, ignore_errors=True)
+    os.replace(tmp, dst)
+    return dst
+
+
+def forwarder(args, out):
+    """Native build, last step: the HOME-screen icon (forwarder .nsp, tools/switch/forwarder). It needs the user's
+    own prod.keys, so without them it is skipped; it never fails the build, since the game does not need it."""
+    print("\n[+] HOME-screen forwarder (optional)", flush=True)
+    keys = os.path.abspath(args.keys or os.path.join(os.path.expanduser("~"), ".switch", "prod.keys"))
+    if not os.path.isfile(keys):
+        print("  skipped: no prod.keys at %s. For the .nsp that puts an icon on the HOME screen, put your console's "
+              "prod.keys there (or use --keys PATH, outside this folder), then run: python "
+              "tools/switch/forwarder/build_forwarder_windows.py --sd \"%s\"" % (keys, out))
+    elif subprocess.call([sys.executable, "-I", os.path.join(ROOT, "tools", "switch", "forwarder",
+                                                             "build_forwarder_windows.py"),
+                          "--keys", keys, "--sd", out], cwd=ROOT) != 0:
+        print("  WARNING: the forwarder was not built (see above); wwhd.nro and the SD folder are fine.", flush=True)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    src = ap.add_mutually_exclusive_group(required=True)
+    src = ap.add_mutually_exclusive_group()
     src.add_argument("--image", help="the disc image (.wux/.wud)")
+    src.add_argument("--wua", help="a Cemu Wii U archive (.wua; no keys needed)")
     src.add_argument("--game-dir", help="an extracted game folder (code/, content/, meta/)")
     ap.add_argument("--out", default=os.path.join(ROOT, "build", "sd"), help="where the SD card folder goes")
     ap.add_argument("--shaders", help="a shadercache_gl.bin from the console, compiled into shadercache_dksh.bin")
     ap.add_argument("--jobs", type=int, help="parallel compiles")
+    ap.add_argument("--keys", help="native build: your console's prod.keys, for the HOME-screen forwarder "
+                    "(default: .switch\\prod.keys in your user folder; without it the forwarder is skipped)")
+    ap.add_argument("--no-forwarder", action="store_true", help="native build: do not build the forwarder (.nsp)")
     args = ap.parse_args()
-    if not (shutil.which("docker") or shutil.which("podman")):
-        fail("Docker or Podman is needed (the Switch toolchain runs in the devkitpro/devkita64 image)")
+    if not (args.image or args.wua or args.game_dir):
+        ap.error("one of --image, --wua or --game-dir is required")
+    native = not have_container_engine()
+    if native:
+        if not native_toolchain_ok():
+            fail("Docker or Podman is needed (the Switch toolchain runs in the devkitpro/devkita64 image), or "
+                 "a native devkitPro with the Switch libraries: see INSTALL.md, \"Windows: devkitPro\"")
+        if args.shaders:
+            fail("--shaders needs Docker or Podman (tools/switch/dksh_cache runs in a container): "
+                 "leave it out on the native build")
 
     step(1, "the game files")
-    game = extract(os.path.abspath(args.image)) if args.image else os.path.abspath(args.game_dir)
+    if args.image:
+        game = extract(os.path.abspath(args.image))
+    elif args.wua:
+        game = extract_wua(os.path.abspath(args.wua))
+    else:
+        game = os.path.abspath(args.game_dir)
     if not setup.valid_game_folder(game):
         fail("%s is not an extracted game (code/cking.rpx, content/, meta/meta.xml)" % game)
     print("  " + game)
 
     step(2, "checking the game version")
     try:
-        setup.check_game_version(game)
+        build = setup.check_game_version(game)
     except setup.SetupError as e:
         fail(str(e))
-    print("  The Wind Waker HD (USA), version 0: OK")
+    print("  The Wind Waker HD (%s), version 0: OK" % build.name)
 
     step(3, "translating the game code to C (about a minute)")
     gen = os.path.join(ROOT, "build", "gen")
@@ -103,7 +179,9 @@ def main():
     env = dict(os.environ)
     if args.jobs:
         env["WWHD_JOBS"] = str(args.jobs)
-    run(["bash", os.path.join("tools", "switch", "build.sh")], env=env)
+    if native:
+        env["WWHD_NATIVE"] = "1"
+    run((native_shell(env) if native else ["bash"]) + ["tools/switch/build.sh"], env=env)
     nro = os.path.join(ROOT, "build", "switch-dk", "wwhd.nro")
     if not os.path.isfile(nro):
         fail("the build made no %s" % nro)
@@ -124,6 +202,8 @@ def main():
         shutil.rmtree(gdst, ignore_errors=True)
         for part in ("code", "content", "meta"):
             shutil.copytree(os.path.join(game, part), os.path.join(gdst, part))
+    if native and not args.no_forwarder:
+        forwarder(args, out)
     print("""
 Done: %s
 

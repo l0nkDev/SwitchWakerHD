@@ -32,6 +32,7 @@
 #include <cstdint>
 #include <cstring>
 
+#include "guest_addr.h"
 #include "input.h"
 #include "runtime.h"
 
@@ -47,19 +48,18 @@ bool gamepad_mode() {
 
 namespace screen_mode {
 bool hidden_pane(uint32_t pane) {
-    constexpr uint32_t kControllerMgr = 0x101F5088, kMode = 0x1D0, kPaneName = 0x80;
+    constexpr uint32_t kMode = 0x1D0, kPaneName = 0x80;
     static const char kSlideInput[] = "N_SlideInput_00";
     if (!gamepad_mode()) return false;
     if (memcmp(mem::ptr(pane + kPaneName), kSlideInput, sizeof kSlideInput)) return false;
-    const uint32_t mgr = ld32(kControllerMgr);
+    const uint32_t mgr = ld32(GD(0x101F5088));  // ControllerMgr*
     return mgr && ld32(mgr + kMode) == 2;  // Off-TV Play
 }
 }  // namespace screen_mode
 
 // file select: changeState(picker widget machine (widget+0x18), r4 = StateID_Display)
 extern "C" void site_0270AC04(Cpu* c) {
-    constexpr uint32_t kStateDisplay = 0x1049AA74;
-    if (c->r[4] != kStateDisplay || !gamepad_mode()) return;
+    if (c->r[4] != GD(0x1049AA74) || !gamepad_mode()) return;  // StateID_Display
     const uint32_t machine = c->r[3], widget = machine - 0x18;
     c->r[4] = ld32(machine + 4);  // the state it is in (hidden): entered again instead of Display
     st8(widget + 0x50, 0);        // not cancelled
@@ -93,7 +93,8 @@ extern "C" void site_0270ACC8(Cpu* c) {
 // Controller (descriptors and values alike) and the count is 5, so Controller is past the end: never shown, never
 // reached. The code that uses fixed offsets (the saver, the Controller callback) sees the game's order.
 namespace {
-constexpr uint32_t kOptDescs = 0x1010307C, kOptDescSize = 0x18;
+constexpr uint32_t kOptDescSize = 0x18;
+uint32_t opt_descs() { return GD(0x1010307C); }  // the item descriptors
 constexpr uint32_t kOptValues = 0x104;
 bool g_opt_reordered = false;  // the descriptor table is in the GamePad order
 
@@ -101,10 +102,10 @@ void swap_desc_order(bool reordered) {  // items 3, 4, 5: Controller, Gyroscope,
     if (g_opt_reordered == reordered) return;
     uint32_t d[3][6];
     for (int i = 0; i < 3; i++)
-        for (int w = 0; w < 6; w++) d[i][w] = ld32(kOptDescs + (3 + i) * kOptDescSize + w * 4);
+        for (int w = 0; w < 6; w++) d[i][w] = ld32(opt_descs() + (3 + i) * kOptDescSize + w * 4);
     static const int kTo[3] = {1, 2, 0}, kFrom[3] = {2, 0, 1};  // reordered[k] = game[kTo[k]]; game[k] = reordered[kFrom[k]]
     for (int i = 0; i < 3; i++)
-        for (int w = 0; w < 6; w++) st32(kOptDescs + (3 + i) * kOptDescSize + w * 4, d[reordered ? kTo[i] : kFrom[i]][w]);
+        for (int w = 0; w < 6; w++) st32(opt_descs() + (3 + i) * kOptDescSize + w * 4, d[reordered ? kTo[i] : kFrom[i]][w]);
     g_opt_reordered = reordered;
     LOG("[screen] options: the Controller item %s", reordered ? "removed (GamePad mode)" : "back");
 }

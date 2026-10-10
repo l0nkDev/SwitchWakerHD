@@ -3,7 +3,7 @@
 ## What it is
 
 SwitchWakerHD is an unofficial native port of a 2013 Wii U adventure game (title ID
-`00050000-10143500`, USA, version 0) to the Switch (homebrew). The game's PowerPC code is
+`00050000-10143500` USA or `00050000-10143600` Europe, version 0) to the Switch (homebrew). The game's PowerPC code is
 translated to C ahead of time by a static recompiler, the Cafe OS libraries the game uses are
 reimplemented natively, and its GX2 graphics are drawn with deko3d, the Switch's own GPU API. There
 is no CPU emulation and no GPU command emulation.
@@ -16,9 +16,10 @@ repository; their instructions are in the upstream README, kept as
 
 ## What you need
 
-- **Your own legally obtained copy of the game**: the USA version, title `00050000-10143500`,
-  version 0 (the disc or eShop release without the update), dumped from your own Wii U. The
-  runtime checks `code/cking.rpx` against that version at startup.
+- **Your own legally obtained copy of the game**: the USA version (title `00050000-10143500`) or the
+  European one (title `00050000-10143600`, in its five languages), version 0 (the disc or eShop release
+  without the update), dumped from your own Wii U. The runtime checks `code/cking.rpx` against those
+  versions at startup.
 - **This repository contains no game code, assets, keys or data.** The NRO you build contains the
   game's code recompiled from your dump, and the shader caches are made from the game's shaders:
   they are for your own use only; do not share them.
@@ -28,9 +29,10 @@ repository; their instructions are in the upstream README, kept as
 ## Build for the Switch
 
 **The short way** (step-by-step guide for players: [INSTALL.md](INSTALL.md)):
-`python3 tools/switch/make_sd.py --image game.wux` (or `--game-dir <extracted game>`) checks the
-game version, recompiles, builds the NRO in Docker and lays out `build/sd/switch/wwhd/` for the SD
-card. The steps it runs, by hand:
+`python3 tools/switch/make_sd.py --image game.wux` (or `--wua game.wua`, or `--game-dir <extracted game>`)
+checks the game version, recompiles, builds the NRO and lays out `build/sd/switch/wwhd/` for the SD card. On
+Windows it builds with a native devkitPro, no Docker or WSL needed (INSTALL.md); elsewhere in Docker or Podman.
+The steps it runs, by hand:
 
 Requirements: Python 3 with `pycryptodome` (for the extractor), and Docker or Podman (the Switch
 toolchain runs in the `devkitpro/devkita64` image). On the Mac also the Xcode command line tools.
